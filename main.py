@@ -198,3 +198,41 @@ def delete_schedule(schedule_id: str, user=Depends(get_current_user)):
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "BSS Backend"}
+
+
+# ── GOOGLE AUTH ──
+import urllib.request, json as _json
+
+class GoogleReq(BaseModel):
+    id_token: str
+
+@app.post("/auth/google")
+def google_auth(req: GoogleReq):
+    # Verify token with Google
+    try:
+        url = f"https://oauth2.googleapis.com/tokeninfo?id_token={req.id_token}"
+        with urllib.request.urlopen(url, timeout=8) as r:
+            info = _json.loads(r.read())
+    except Exception:
+        raise HTTPException(401, "Token Google tidak valid")
+
+    if info.get("aud") != os.getenv("GOOGLE_CLIENT_ID", ""):
+        raise HTTPException(401, "Client ID tidak cocok")
+
+    google_id = info.get("sub")
+    email     = info.get("email", "")
+    name      = info.get("name", email.split("@")[0])
+    username  = "g_" + google_id[:12]  # prefix 'g_' to avoid clash
+
+    conn = get_db()
+    user = conn.execute("SELECT * FROM users WHERE id=?", (google_id,)).fetchone()
+    if not user:
+        conn.execute(
+            "INSERT OR IGNORE INTO users VALUES (?,?,?,?,?)",
+            (google_id, username, name, "GOOGLE_AUTH", datetime.utcnow().isoformat())
+        )
+        conn.commit()
+    conn.close()
+
+    token = make_token(google_id, username)
+    return {"token": token, "name": name, "username": username}
